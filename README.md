@@ -20,7 +20,7 @@ This project aims to identify key macroeconomic predictors of S&P 500 returns us
 
 * Clone this repository:
     ```bash
-    git clone [https://github.com/yourusername/Macro-Drivers.git](https://github.com/yourusername/Macro-Drivers.git)
+    git clone https://github.com/yourusername/Macro-Drivers.git
     cd Macro-Drivers
     ```
 * Set up your FRED API key:
@@ -48,11 +48,6 @@ Execute the scripts in this order:
 * Variable selection:
     ```r
     source("scripts/03_variable_selection.R")
-    ```
-
-* If you encounter issues with NA values, use the `fix_data.R` script:
-    ```r
-    source("scripts/fix_data.R")
     ```
 
 ### 4. Viewing Results
