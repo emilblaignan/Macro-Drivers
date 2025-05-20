@@ -1,0 +1,38 @@
+
+> cat("Recession Indicator T-Test:\n")
+Recession Indicator T-Test:
+
+> print(recession_test)
+
+	Welch Two Sample t-test
+
+data:  cleaned_data$monthly_return[cleaned_data$USREC == 1] and cleaned_data$monthly_return[cleaned_data$USREC == 0]
+t = -1.2482, df = 28.149, p-value = 0.2222
+alternative hypothesis: true difference in means is not equal to 0
+95 percent confidence interval:
+ -0.05308317  0.01287935
+sample estimates:
+   mean of x    mean of y 
+-0.014345378  0.005756531 
+
+
+> cat("\n\nFed Tightening Indicator T-Test:\n")
+
+
+Fed Tightening Indicator T-Test:
+
+> print(tightening_test)
+
+	Welch Two Sample t-test
+
+data:  cleaned_data$monthly_return[cleaned_data$tightening == 1] and cleaned_data$monthly_return[cleaned_data$tightening == 0]
+t = -1.3109, df = 300.94, p-value = 0.1909
+alternative hypothesis: true difference in means is not equal to 0
+95 percent confidence interval:
+ -0.016512500  0.003308699
+sample estimates:
+   mean of x    mean of y 
+0.0001948923 0.0067967930 
+
+
+> sink()

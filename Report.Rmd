@@ -1,0 +1,96 @@
+---
+title: "Macroeconomic Drivers of S&P 500 Returns: A Boruta-Selected Regression Analysis"
+author: "Emil Blaignan, Robert Sellman, Sean Eizadi"
+date: "`r Sys.Date()`"
+output: 
+  pdf_document:
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(knitr)
+library(Boruta)
+library(corrplot)
+```
+
+## 1. Variable Selection
+
+### 1a. Quantitative Predictors via Boruta
+
+We applied the Boruta algorithm to identify macroeconomic variables most strongly associated with monthly S&P 500 returns. Boruta uses a random forest classifier to assess feature importance, comparing real variables against randomly permuted “shadow” features.
+
+```{r boruta-run}
+# Load data
+cleaned_data <- read_csv("data/processed_data.csv")
+
+# Prepare Boruta data
+boruta_data <- cleaned_data %>%
+  select(-date, -USREC, -tightening) %>%
+  select(where(is.numeric))
+
+# Run Boruta
+set.seed(123)
+boruta_results <- Boruta(monthly_return ~ ., data = boruta_data, doTrace = 1, maxRuns = 100)
+
+# Plot Boruta results
+plot(boruta_results)
+
+# Extract selected attributes
+important_vars <- getSelectedAttributes(boruta_results, withTentative = FALSE)
+important_vars
+```
+
+From the confirmed important variables, we retained the **top five** based on importance scores:
+
+1. **VIXCLS** – CBOE Volatility Index (investor risk sentiment)
+2. **AAA** – Yield on AAA-rated corporate bonds (long-term credit conditions)
+3. **PAYEMS** – Nonfarm payroll employment
+4. **M2SL** – M2 money stock
+5. **UNRATE** – Unemployment rate
+
+These variables reflect key macroeconomic themes: sentiment, credit, labor, and monetary conditions. All are grounded in theory as plausible drivers of equity returns.
+
+---
+
+### 1b. Selection of Factor Variables
+
+We also evaluated two binary indicators:
+
+- **USREC**: NBER recession indicator (1 = recession)
+- **tightening**: Dummy for Fed tightening (1 = FEDFUNDS > lagged value)
+
+To assess predictive power, we ran two-sample t-tests:
+
+```{r t-tests}
+# Recession t-test
+recession_test <- t.test(
+  cleaned_data$monthly_return[cleaned_data$USREC == 1],
+  cleaned_data$monthly_return[cleaned_data$USREC == 0]
+)
+
+# Tightening t-test
+tightening_test <- t.test(
+  cleaned_data$monthly_return[cleaned_data$tightening == 1],
+  cleaned_data$monthly_return[cleaned_data$tightening == 0]
+)
+
+recession_test
+tightening_test
+```
+
+Neither test produced statistically significant results at conventional levels (p = 0.22 for `USREC`; p = 0.19 for `tightening`). Nevertheless, we **retained both factors** based on theoretical relevance. Recession periods and monetary policy shifts are widely accepted as important structural influences on asset returns. Their effects may emerge in multivariate settings or through interaction terms.
+
+---
+
+## 2. Descriptive Analysis (Preview)
+
+Before model estimation, we conduct exploratory analysis on the **five selected quantitative predictors** and **two factor variables**. This includes:
+
+- Distributional plots (histograms, density curves, boxplots)
+- Correlation diagnostics (correlation matrix, scatterplots)
+- Outlier checks and transformation considerations (e.g., log or squared terms)
+
+This step ensures variables are well-behaved and suitable for regression modeling. Code and figures will follow in Section 2.
