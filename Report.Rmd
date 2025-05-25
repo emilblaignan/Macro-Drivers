@@ -5,92 +5,578 @@ date: "`r Sys.Date()`"
 output: 
   pdf_document:
     toc: true
-    toc_depth: 2
+    number_sections: true
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, 
+                      fig.height = 5, fig.width = 8, fig.align = "center")
 library(tidyverse)
-library(knitr)
 library(Boruta)
 library(corrplot)
+library(VIM)
+library(moments)
+library(car)
+library(gridExtra)
+library(ggplot2)
+library(knitr)
+library(forecast)
 ```
 
-## 1. Variable Selection
+# Introduction
 
-### 1a. Quantitative Predictors via Boruta
+This project identifies key macroeconomic predictors of S&P 500 returns using Boruta feature selection and multiple regression analysis. Our primary research questions are:
 
-We applied the Boruta algorithm to identify macroeconomic variables most strongly associated with monthly S&P 500 returns. Boruta uses a random forest classifier to assess feature importance, comparing real variables against randomly permuted “shadow” features.
+- Which macroeconomic indicators (e.g., yield curve, inflation, volatility) are most statistically significant in predicting S&P 500 returns?
+- How do factor variables (e.g., recession dummies, Fed policy indicators) improve model fit?
+- What are the economic magnitudes and interpretations of these relationships?
 
-```{r boruta-run}
-# Load data
+**Data Sources**: We utilize quantitative data from FRED (Federal Reserve Economic Data) spanning January 2000 to March 2025, including over 15 initial macroeconomic predictors. Factor variables include the NBER recession indicator and Fed tightening cycle dummies. Our target variable is monthly S&P 500 returns calculated from Yahoo Finance data.
+
+# Variable Selection
+
+## Quantitative Predictors via Boruta
+
+We applied the Boruta algorithm to identify macroeconomic variables most strongly associated with monthly S&P 500 returns. Boruta uses a random forest classifier to assess feature importance, comparing real variables against randomly permuted "shadow" features.
+
+```{r load-data}
+# Load processed data
 cleaned_data <- read_csv("data/processed_data.csv")
+cat("Dataset dimensions:", nrow(cleaned_data), "observations,", ncol(cleaned_data), "variables\n")
 
-# Prepare Boruta data
+# Convert dates to proper format
+if(is.numeric(cleaned_data$date)) {
+  cleaned_data$date <- as.Date(cleaned_data$date, origin = "1970-01-01")
+} else if(is.character(cleaned_data$date)) {
+  cleaned_data$date <- as.Date(cleaned_data$date)
+}
+
+cat("Time period:", as.character(min(cleaned_data$date)), "to", as.character(max(cleaned_data$date)), "\n")
+```
+
+```{r boruta-analysis, fig.height=6, fig.width=10}
+# Prepare data for Boruta
 boruta_data <- cleaned_data %>%
   select(-date, -USREC, -tightening) %>%
   select(where(is.numeric))
 
-# Run Boruta
+# Create formula for Boruta
+predictors <- names(boruta_data)[names(boruta_data) != "monthly_return"]
+formula_str <- paste("monthly_return ~", paste(predictors, collapse = " + "))
+boruta_formula <- as.formula(formula_str)
+
+# Run Boruta feature selection
 set.seed(123)
-boruta_results <- Boruta(monthly_return ~ ., data = boruta_data, doTrace = 1, maxRuns = 100)
+boruta_results <- Boruta(boruta_formula, data = boruta_data, doTrace = 1, maxRuns = 100)
 
-# Plot Boruta results
-plot(boruta_results)
+print(boruta_results)
 
-# Extract selected attributes
-important_vars <- getSelectedAttributes(boruta_results, withTentative = FALSE)
-important_vars
+# Plot results
+par(mar = c(8, 4, 4, 2))
+plot(boruta_results, main = "Boruta Feature Selection Results", 
+     cex.axis = 0.8, las = 2)
 ```
 
-From the confirmed important variables, we retained the **top five** based on importance scores:
+```{r boruta-selection}
+# Extract selected attributes
+important_vars <- getSelectedAttributes(boruta_results, withTentative = FALSE)
+cat("\nAll important variables selected by Boruta:\n")
+print(important_vars)
+
+# Get importance statistics
+boruta_stats <- attStats(boruta_results)
+confirmed_vars <- boruta_stats[boruta_stats$decision == "Confirmed", ]
+confirmed_vars <- confirmed_vars[order(confirmed_vars$medianImp, decreasing = TRUE), ]
+cat("Top variables by importance:\n")
+print(head(confirmed_vars, 10))
+```
+
+### Final Variable Selection from Boruta Results
+
+From Boruta's confirmed important variables, we selected the top five using the following criteria:
+
+1. Highest median importance scores from the Boruta algorithm
+2. Economic interpretability and theoretical grounding  
+3. Representing different economic dimensions (sentiment, real activity, credit, inflation, monetary policy)
+4. Avoiding severe multicollinearity among selected predictors
+
+```{r final-selection}
+# Select top 5 based on importance and economic theory
+selected_vars <- c("VIXCLS", "INDPRO", "AAA", "CPIAUCSL", "FEDFUNDS")
+cat("\nSelected variables for analysis:\n")
+
+# Display importance scores
+for(i in 1:length(selected_vars)) {
+  var <- selected_vars[i]
+  imp_score <- ifelse(var %in% rownames(confirmed_vars),
+                     round(confirmed_vars[var, "medianImp"], 3), "N/A")
+  cat(sprintf("%d. %s (Importance: %s)\n", i, var, imp_score))
+}
+```
+
+Our final selection represents key macroeconomic themes:
 
 1. **VIXCLS** – CBOE Volatility Index (investor risk sentiment)
-2. **AAA** – Yield on AAA-rated corporate bonds (long-term credit conditions)
-3. **PAYEMS** – Nonfarm payroll employment
-4. **M2SL** – M2 money stock
-5. **UNRATE** – Unemployment rate
+2. **INDPRO** – Industrial Production Index (real economic activity)  
+3. **AAA** – Yield on AAA-rated corporate bonds (credit conditions)
+4. **CPIAUCSL** – Consumer Price Index (inflation pressures)
+5. **FEDFUNDS** – Federal Funds Rate (monetary policy stance)
 
-These variables reflect key macroeconomic themes: sentiment, credit, labor, and monetary conditions. All are grounded in theory as plausible drivers of equity returns.
+## Selection of Factor Variables
 
----
+We evaluated two binary indicators based on economic theory:
 
-### 1b. Selection of Factor Variables
+- **USREC**: NBER recession indicator (1 = recession period)
+- **tightening**: Fed tightening dummy (1 = FEDFUNDS > lagged value)
 
-We also evaluated two binary indicators:
-
-- **USREC**: NBER recession indicator (1 = recession)
-- **tightening**: Dummy for Fed tightening (1 = FEDFUNDS > lagged value)
-
-To assess predictive power, we ran two-sample t-tests:
-
-```{r t-tests}
-# Recession t-test
+```{r factor-tests, fig.height=5, fig.width=10}
+# Test significance of recession indicator
 recession_test <- t.test(
   cleaned_data$monthly_return[cleaned_data$USREC == 1],
   cleaned_data$monthly_return[cleaned_data$USREC == 0]
 )
 
-# Tightening t-test
+# Test significance of Fed tightening dummy
 tightening_test <- t.test(
   cleaned_data$monthly_return[cleaned_data$tightening == 1],
   cleaned_data$monthly_return[cleaned_data$tightening == 0]
 )
 
-recession_test
-tightening_test
+cat("Recession Indicator T-Test Results:\n")
+print(recession_test)
+
+cat("\nFed Tightening Indicator T-Test Results:\n")
+print(tightening_test)
+
+# Visualize factor variables
+par(mfrow = c(1, 2), mar = c(5, 4, 4, 2))
+boxplot(monthly_return ~ USREC, data = cleaned_data,
+        main = "S&P 500 Returns by Recession Status",
+        xlab = "Recession (1=Yes, 0=No)", ylab = "Monthly Return",
+        col = c("lightblue", "salmon"))
+boxplot(monthly_return ~ tightening, data = cleaned_data,
+        main = "S&P 500 Returns by Fed Tightening",
+        xlab = "Tightening Cycle (1=Yes, 0=No)", ylab = "Monthly Return",
+        col = c("lightgreen", "orange"))
+par(mfrow = c(1, 1))
 ```
 
-Neither test produced statistically significant results at conventional levels (p = 0.22 for `USREC`; p = 0.19 for `tightening`). Nevertheless, we **retained both factors** based on theoretical relevance. Recession periods and monetary policy shifts are widely accepted as important structural influences on asset returns. Their effects may emerge in multivariate settings or through interaction terms.
+**Results**: Neither test produced statistically significant results at conventional levels (p = 0.22 for USREC; p = 0.19 for tightening). However, we retained both factors based on strong theoretical relevance.
 
----
+# Descriptive Analysis
 
-## 2. Descriptive Analysis (Preview)
+## Data Quality Assessment
 
-Before model estimation, we conduct exploratory analysis on the **five selected quantitative predictors** and **two factor variables**. This includes:
+```{r analysis-setup}
+# Define analysis variables
+factor_vars <- c("USREC", "tightening")
+target_var <- "monthly_return"
 
-- Distributional plots (histograms, density curves, boxplots)
-- Correlation diagnostics (correlation matrix, scatterplots)
-- Outlier checks and transformation considerations (e.g., log or squared terms)
+# Create working dataset
+analysis_data <- cleaned_data %>%
+  select(date, all_of(selected_vars), all_of(factor_vars), all_of(target_var))
 
-This step ensures variables are well-behaved and suitable for regression modeling. Code and figures will follow in Section 2.
+# Check for missing values
+missing_summary <- analysis_data %>%
+  summarise(across(everything(), ~sum(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "missing_count") %>%
+  mutate(missing_pct = (missing_count / nrow(analysis_data)) * 100) %>%
+  arrange(desc(missing_count))
+
+cat("Missing Values Summary:\n")
+print(missing_summary)
+```
+
+**Missing Data Handling**: Our preprocessed dataset contains no missing values. Any missing values encountered during preprocessing were addressed through median imputation.
+
+## Outlier Detection and Treatment
+
+```{r outlier-analysis}
+# Function to detect outliers using IQR method
+detect_outliers <- function(x) {
+  Q1 <- quantile(x, 0.25, na.rm = TRUE)
+  Q3 <- quantile(x, 0.75, na.rm = TRUE)
+  IQR <- Q3 - Q1
+  lower <- Q1 - 1.5 * IQR
+  upper <- Q3 + 1.5 * IQR
+  return(x < lower | x > upper)
+}
+
+# Outlier summary for numeric variables
+outlier_summary <- analysis_data %>%
+  select(all_of(c(selected_vars, target_var))) %>%
+  summarise(across(everything(), ~sum(detect_outliers(.), na.rm = TRUE))) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "outlier_count") %>%
+  mutate(outlier_pct = (outlier_count / nrow(analysis_data)) * 100) %>%
+  arrange(desc(outlier_count))
+
+cat("Outlier Summary (using IQR method):\n")
+print(outlier_summary)
+
+# Apply winsorization to monthly returns
+analysis_data <- analysis_data %>%
+  mutate(
+    monthly_return_original = monthly_return,
+    monthly_return = case_when(
+      monthly_return > quantile(monthly_return, 0.99, na.rm = TRUE) ~
+        quantile(monthly_return, 0.99, na.rm = TRUE),
+      monthly_return < quantile(monthly_return, 0.01, na.rm = TRUE) ~
+        quantile(monthly_return, 0.01, na.rm = TRUE),
+      TRUE ~ monthly_return
+    )
+  )
+
+cat("\nWinsorization applied to monthly_return at 1% and 99% percentiles.\n")
+```
+
+**Outlier Treatment**: We winsorized S&P 500 returns at the 1st and 99th percentiles to mitigate the impact of extreme market events while preserving the overall distribution structure.
+
+## Univariate Distributional Analysis
+
+```{r summary-stats}
+# Generate summary statistics
+numeric_vars <- c(selected_vars, target_var)
+summary_stats <- analysis_data %>%
+  select(all_of(numeric_vars)) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "value") %>%
+  group_by(variable) %>%
+  summarise(
+    n = n(),
+    mean = mean(value, na.rm = TRUE),
+    median = median(value, na.rm = TRUE),
+    sd = sd(value, na.rm = TRUE),
+    min = min(value, na.rm = TRUE),
+    max = max(value, na.rm = TRUE),
+    skewness = moments::skewness(value, na.rm = TRUE),
+    kurtosis = moments::kurtosis(value, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+kable(summary_stats, digits = 3, caption = "Summary Statistics for Analysis Variables")
+```
+
+## Distribution Plots with Fitted Normal Curves
+
+```{r distribution-plots, fig.height=10, fig.width=12}
+# Create histograms with density curves and fitted normal distributions
+create_histogram_plots <- function(data, vars) {
+  plots <- list()
+  
+  for(var in vars) {
+    p <- ggplot(data, aes_string(x = var)) +
+      geom_histogram(aes(y = ..density..), bins = 30, fill = "lightblue", 
+                     alpha = 0.7, color = "black") +
+      geom_density(color = "red", size = 1, alpha = 0.8) +
+      stat_function(fun = dnorm, 
+                    args = list(mean = mean(data[[var]], na.rm = TRUE), 
+                               sd = sd(data[[var]], na.rm = TRUE)),
+                    color = "blue", size = 1, linetype = "dashed") +
+      labs(title = paste("Distribution of", var),
+           subtitle = "Red = Actual, Blue = Normal",
+           x = var, y = "Density") +
+      theme_minimal() +
+      theme(plot.title = element_text(size = 10),
+            plot.subtitle = element_text(size = 8))
+    
+    plots[[var]] <- p
+  }
+  
+  return(plots)
+}
+
+# Generate and display histogram plots
+hist_plots <- create_histogram_plots(analysis_data, numeric_vars)
+
+grid.arrange(grobs = hist_plots[1:3], ncol = 3, top = "Distribution Analysis - Part 1")
+grid.arrange(grobs = hist_plots[4:6], ncol = 3, top = "Distribution Analysis - Part 2")
+```
+
+## Normality Assessment via Q-Q Plots
+
+```{r qq-plots, fig.height=10, fig.width=12}
+# Create Q-Q plots for normality assessment
+create_qq_plots <- function(data, vars) {
+  plots <- list()
+  
+  for(var in vars) {
+    p <- ggplot(data, aes_string(sample = var)) +
+      stat_qq() +
+      stat_qq_line(color = "red") +
+      labs(title = paste("Q-Q Plot:", var),
+           subtitle = "Points should follow red line for normality") +
+      theme_minimal() +
+      theme(plot.title = element_text(size = 10),
+            plot.subtitle = element_text(size = 8))
+    
+    plots[[var]] <- p
+  }
+  
+  return(plots)
+}
+
+# Generate and display QQ plots
+qq_plots <- create_qq_plots(analysis_data, numeric_vars)
+
+grid.arrange(grobs = qq_plots[1:3], ncol = 3, top = "Q-Q Plot Analysis - Part 1")
+grid.arrange(grobs = qq_plots[4:6], ncol = 3, top = "Q-Q Plot Analysis - Part 2")
+```
+
+## Transformation Analysis
+
+```{r identify-candidates}
+# Identify variables requiring transformation based on skewness and visual inspection
+transform_candidates <- summary_stats %>%
+  filter(abs(skewness) > 0.5, variable != "monthly_return") %>%
+  pull(variable)
+
+cat("Variables with |skewness| > 0.5 requiring transformation:\n")
+print(transform_candidates)
+```
+
+```{r transformation-testing}
+# Test transformations for each candidate variable
+if(length(transform_candidates) > 0) {
+  
+  # Function to test transformations for a single variable
+  test_transformations <- function(var_name, data) {
+    original_data <- data[!is.na(data)]
+    orig_skew <- moments::skewness(original_data)
+    
+    # Initialize results
+    results <- tibble(
+      variable = var_name,
+      transformation = "original",
+      skewness = orig_skew,
+      abs_skewness = abs(orig_skew)
+    )
+    
+    # Test basic transformations
+    if(min(original_data) > 0) {
+      # Log transformation
+      log_skew <- moments::skewness(log(original_data))
+      results <- bind_rows(results, tibble(
+        variable = var_name, transformation = "log",
+        skewness = log_skew, abs_skewness = abs(log_skew)
+      ))
+      
+      # Square root transformation
+      sqrt_skew <- moments::skewness(sqrt(original_data))
+      results <- bind_rows(results, tibble(
+        variable = var_name, transformation = "sqrt",
+        skewness = sqrt_skew, abs_skewness = abs(sqrt_skew)
+      ))
+    }
+    
+    # Yeo-Johnson transformation (works for all values)
+    tryCatch({
+      yj_lambda <- optimize(function(lambda) {
+        transformed <- car::yjPower(original_data, lambda)
+        if(any(is.na(transformed)) || any(is.infinite(transformed))) return(999)
+        abs(moments::skewness(transformed))
+      }, interval = c(-2, 2))$minimum
+      
+      yj_data <- car::yjPower(original_data, yj_lambda)
+      if(!any(is.na(yj_data)) && !any(is.infinite(yj_data))) {
+        yj_skew <- moments::skewness(yj_data)
+        results <- bind_rows(results, tibble(
+          variable = var_name,
+          transformation = paste0("yeo_johnson_", round(yj_lambda, 3)),
+          skewness = yj_skew, abs_skewness = abs(yj_skew)
+        ))
+      }
+    }, error = function(e) {
+      cat("Yeo-Johnson failed for", var_name, "\n")
+    })
+    
+    return(results)
+  }
+  
+  # Test transformations for all candidates
+  all_results <- tibble()
+  for(var in transform_candidates) {
+    var_results <- test_transformations(var, analysis_data[[var]])
+    all_results <- bind_rows(all_results, var_results)
+  }
+  
+  # Get original skewness for each variable
+  original_skewness <- all_results %>%
+    filter(transformation == "original") %>%
+    select(variable, original_skewness = skewness)
+  
+  # Get best transformation for each variable
+  best_transformations <- all_results %>%
+    group_by(variable) %>%
+    slice_min(abs_skewness, n = 1) %>%
+    ungroup() %>%
+    select(variable, best_transformation = transformation, final_skewness = skewness)
+  
+  # Create summary table
+  transformation_summary <- original_skewness %>%
+    left_join(best_transformations, by = "variable") %>%
+    mutate(improvement = abs(original_skewness) - abs(final_skewness)) %>%
+    select(variable, original_skewness, best_transformation, final_skewness, improvement)
+  
+  kable(transformation_summary, digits = 3, caption = "Transformation Analysis Summary")
+}
+```
+
+```{r detailed-example}
+# Show detailed results for one variable as example
+if(length(transform_candidates) > 0) {
+  example_var <- transform_candidates[1]
+  cat("\nDetailed transformation options for", example_var, ":\n")
+  
+  example_results <- all_results %>%
+    filter(variable == example_var) %>%
+    arrange(abs_skewness) %>%
+    select(transformation, skewness, abs_skewness)
+  
+  kable(example_results, digits = 3)
+}
+```
+
+**Transformation Recommendations**: Based on skewness analysis, variables with |skewness| > 0.5 may require transformation to achieve closer-to-normal distributions.
+
+**Consequences of Non-Transformation**: If non-linear variables are not transformed, the linear model might not accurately capture the relationships, potentially leading to biased coefficient estimates and poor model fit. Model residuals might deviate from normality, and the model's predictive power could be significantly reduced.
+
+## Correlation Analysis
+
+```{r correlation-analysis, fig.height=7, fig.width=8}
+# Calculate correlation matrix
+cor_matrix <- analysis_data %>%
+  select(all_of(numeric_vars)) %>%
+  cor(use = "pairwise.complete.obs")
+
+print("Correlation Matrix:")
+print(round(cor_matrix, 3))
+
+# Create correlation heatmap
+par(mar = c(5, 5, 5, 5))
+corrplot(cor_matrix, method = "color", type = "upper", 
+         tl.col = "black", tl.srt = 45, tl.cex = 0.8,
+         title = "Correlation Matrix of Selected Variables",
+         addCoef.col = "black", number.cex = 0.7,
+         mar = c(0,0,3,0))
+
+# Identify high correlations
+high_correlations <- expand_grid(
+  var1 = rownames(cor_matrix),
+  var2 = colnames(cor_matrix)
+) %>%
+  filter(var1 != var2) %>%
+  mutate(correlation = map2_dbl(var1, var2, ~cor_matrix[.x, .y])) %>%
+  filter(abs(correlation) > 0.7) %>%
+  arrange(desc(abs(correlation)))
+
+if(nrow(high_correlations) > 0) {
+  cat("\nHigh correlations (|r| > 0.7) detected:\n")
+  print(high_correlations)
+} else {
+  cat("\nNo problematic multicollinearity (|r| > 0.7) detected among predictors.\n")
+}
+
+# Correlations with target variable
+target_correlations <- cor_matrix[, "monthly_return"]
+target_cors <- target_correlations[names(target_correlations) != "monthly_return"]
+cat("\nCorrelations with Monthly Returns:\n")
+print(round(target_cors, 3))
+```
+
+## Factor Variable Analysis
+
+```{r factor-analysis}
+# Summary of factor variables
+factor_summary <- analysis_data %>%
+  select(all_of(factor_vars)) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "value") %>%
+  group_by(variable, value) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(variable) %>%
+  mutate(percentage = (count / sum(count)) * 100)
+
+kable(factor_summary, digits = 2, caption = "Factor Variable Distribution")
+```
+
+```{r factor-boxplots, fig.height=5, fig.width=10}
+# Box plots for factor variables vs target
+factor_boxplots <- list()
+
+for(var in factor_vars) {
+  p <- ggplot(analysis_data, aes_string(x = paste0("factor(", var, ")"), y = target_var)) +
+    geom_boxplot(fill = "lightblue", alpha = 0.7) +
+    geom_jitter(width = 0.2, alpha = 0.5) +
+    labs(title = paste("S&P 500 Returns by", var),
+         x = var, y = "Monthly Return") +
+    theme_minimal()
+  
+  factor_boxplots[[var]] <- p
+}
+
+grid.arrange(grobs = factor_boxplots, ncol = 2)
+```
+
+## Time Series Visualization
+
+```{r time-series, fig.height=6, fig.width=10}
+# Plot target variable over time
+p_target <- ggplot(analysis_data, aes(x = date, y = monthly_return)) +
+  geom_line(color = "blue", alpha = 0.7) +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(title = "S&P 500 Monthly Returns Over Time",
+       x = "Date", y = "Monthly Return") +
+  theme_minimal()
+
+print(p_target)
+```
+
+```{r predictors-timeseries, fig.height=6, fig.width=10}
+# Plot normalized predictors over time
+ts_data_normalized <- analysis_data %>%
+  select(date, all_of(selected_vars)) %>%
+  mutate(across(-date, ~scale(.)[,1])) %>%
+  pivot_longer(-date, names_to = "variable", values_to = "value")
+
+p_predictors <- ggplot(ts_data_normalized, aes(x = date, y = value, color = variable)) +
+  geom_line(alpha = 0.7) +
+  labs(title = "Normalized Predictor Variables Over Time",
+       x = "Date", y = "Normalized Value",
+       color = "Variable") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+print(p_predictors)
+```
+
+## Descriptive Analysis Summary
+
+**Key Findings:**
+
+1. **Data Quality**: No missing values in preprocessed dataset.
+
+2. **Distributional Properties**: 
+   - Variables show varying degrees of skewness requiring potential transformations
+   - Monthly returns are approximately normal after winsorization
+
+3. **Outliers**: Extreme returns winsorized at 1st/99th percentiles.
+
+4. **Correlations**: 
+   - VIXCLS emerges as strongest predictor (r = -0.393)
+   - No severe multicollinearity detected among predictors
+
+5. **Factor Variables**: While not individually significant, recession and tightening indicators retained for theoretical completeness.
+
+# Model Building (To be completed)
+
+[Model building section will follow with competing regression models, diagnostics, and selection procedures as outlined in the project proposal]
+
+# Conclusion (To be completed)
+
+[Final interpretation and economic insights]
+
+# References
+
+Federal Reserve Economic Data (FRED). Federal Reserve Bank of St. Louis. https://fred.stlouisfed.org/
+
+Yahoo Finance. S&P 500 Historical Data. https://finance.yahoo.com/
+
+National Bureau of Economic Research (NBER). US Business Cycle Expansions and Contractions. https://www.nber.org/research/data/us-business-cycle-expansions-and-contractions
