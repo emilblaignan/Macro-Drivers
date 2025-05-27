@@ -333,105 +333,169 @@ cat("Variables with |skewness| > 0.5 requiring transformation:\n")
 print(transform_candidates)
 ```
 
-```{r transformation-testing}
-# Test transformations for each candidate variable
+```{r transformation-testing, echo = FALSE, warning = FALSE, message = FALSE}
+# Test transformations for each candidate variable and select the best option
 if(length(transform_candidates) > 0) {
   
   # Function to test transformations for a single variable
-  test_transformations <- function(var_name, data) {
-    original_data <- data[!is.na(data)]
+  # It now tests Original, Log, Square Root, and Box-Cox (using forecast::BoxCox)
+  test_transformations <- function(var_name, data_vector) {
+    original_data <- data_vector[!is.na(data_vector)]
+    if(length(original_data) == 0) { # Handle case where all data is NA for some reason
+        return(tibble(
+            variable = var_name, 
+            transformation_type = "Original", 
+            transformation_detail = "All NA input", 
+            skewness = NA_real_
+        ))
+    }
     orig_skew <- moments::skewness(original_data)
     
-    # Initialize results
+    # Initialize results tibble
     results <- tibble(
-      variable = var_name,
-      transformation = "original",
-      skewness = orig_skew,
-      abs_skewness = abs(orig_skew)
+      variable = character(),
+      transformation_type = character(),
+      transformation_detail = character(),
+      skewness = numeric()
     )
     
-    # Test basic transformations
-    if(min(original_data) > 0) {
-      # Log transformation
-      log_skew <- moments::skewness(log(original_data))
+    # Add original data
+    results <- bind_rows(results, tibble(
+      variable = var_name, transformation_type = "Original", 
+      transformation_detail = "None", skewness = orig_skew
+    ))
+    
+    # Test log transformation
+    if(min(original_data, na.rm = TRUE) > 0) {
+      log_data <- log(original_data)
+      log_skew <- moments::skewness(log_data)
       results <- bind_rows(results, tibble(
-        variable = var_name, transformation = "log",
-        skewness = log_skew, abs_skewness = abs(log_skew)
+        variable = var_name, transformation_type = "Log", 
+        transformation_detail = "log(x)", skewness = log_skew
       ))
-      
-      # Square root transformation
-      sqrt_skew <- moments::skewness(sqrt(original_data))
+    } else {
       results <- bind_rows(results, tibble(
-        variable = var_name, transformation = "sqrt",
-        skewness = sqrt_skew, abs_skewness = abs(sqrt_skew)
+        variable = var_name, transformation_type = "Log", 
+        transformation_detail = "Data not all positive", skewness = NA_real_
       ))
     }
     
-    # Yeo-Johnson transformation (works for all values)
-    tryCatch({
-      yj_lambda <- optimize(function(lambda) {
-        transformed <- car::yjPower(original_data, lambda)
-        if(any(is.na(transformed)) || any(is.infinite(transformed))) return(999)
-        abs(moments::skewness(transformed))
-      }, interval = c(-2, 2))$minimum
+    # Test square root transformation
+    if(min(original_data, na.rm = TRUE) >= 0) { # sqrt can handle 0
+      sqrt_data <- sqrt(original_data)
+      sqrt_skew <- moments::skewness(sqrt_data)
+      results <- bind_rows(results, tibble(
+        variable = var_name, transformation_type = "Square Root", 
+        transformation_detail = "sqrt(x)", skewness = sqrt_skew
+      ))
+    } else {
+       results <- bind_rows(results, tibble(
+        variable = var_name, transformation_type = "Square Root", 
+        transformation_detail = "Data has negative values", skewness = NA_real_
+      ))
+    }
+    
+    # Test Box-Cox transformation
+    if(min(original_data, na.rm = TRUE) > 0) {
+      lambda <- tryCatch({
+        # Using guerrero method for robustness, common for economic data
+        forecast::BoxCox.lambda(original_data, method = "guerrero", lower = -2, upper = 2)
+      }, error = function(e) { 
+        # cat("Box-Cox lambda estimation failed for", var_name, ":", e$message, "\n") # Optional: for debugging
+        NULL 
+      })
       
-      yj_data <- car::yjPower(original_data, yj_lambda)
-      if(!any(is.na(yj_data)) && !any(is.infinite(yj_data))) {
-        yj_skew <- moments::skewness(yj_data)
+      if(!is.null(lambda)) {
+        bc_data <- forecast::BoxCox(original_data, lambda)
+        bc_skew <- moments::skewness(bc_data)
         results <- bind_rows(results, tibble(
-          variable = var_name,
-          transformation = paste0("yeo_johnson_", round(yj_lambda, 3)),
-          skewness = yj_skew, abs_skewness = abs(yj_skew)
+          variable = var_name, transformation_type = "Box-Cox", 
+          transformation_detail = paste0("lambda = ", round(lambda, 3)), skewness = bc_skew
+        ))
+      } else {
+        results <- bind_rows(results, tibble(
+          variable = var_name, transformation_type = "Box-Cox", 
+          transformation_detail = "Lambda estimation failed", skewness = NA_real_
         ))
       }
-    }, error = function(e) {
-      cat("Yeo-Johnson failed for", var_name, "\n")
-    })
+    } else {
+      results <- bind_rows(results, tibble(
+        variable = var_name, transformation_type = "Box-Cox", 
+        transformation_detail = "Data not all positive", skewness = NA_real_
+      ))
+    }
     
     return(results)
-  }
+  } # end of test_transformations function
   
-  # Test transformations for all candidates
-  all_results <- tibble()
+  # Gather all transformation options for candidate variables
+  all_transformation_options <- tibble()
   for(var in transform_candidates) {
-    var_results <- test_transformations(var, analysis_data[[var]])
-    all_results <- bind_rows(all_results, var_results)
+    # Ensure the data passed is the vector from analysis_data
+    var_data_vector <- analysis_data[[var]]
+    var_results <- test_transformations(var, var_data_vector)
+    all_transformation_options <- bind_rows(all_transformation_options, var_results)
   }
   
-  # Get original skewness for each variable
-  original_skewness <- all_results %>%
-    filter(transformation == "original") %>%
-    select(variable, original_skewness = skewness)
-  
-  # Get best transformation for each variable
-  best_transformations <- all_results %>%
-    group_by(variable) %>%
-    slice_min(abs_skewness, n = 1) %>%
-    ungroup() %>%
-    select(variable, best_transformation = transformation, final_skewness = skewness)
-  
-  # Create summary table
-  transformation_summary <- original_skewness %>%
-    left_join(best_transformations, by = "variable") %>%
-    mutate(improvement = abs(original_skewness) - abs(final_skewness)) %>%
-    select(variable, original_skewness, best_transformation, final_skewness, improvement)
-  
-  kable(transformation_summary, digits = 3, caption = "Transformation Analysis Summary")
-}
-```
+  # Process options to determine the chosen one for each variable for the summary table
+  if(nrow(all_transformation_options) > 0) {
+    processed_options <- all_transformation_options %>%
+      filter(!is.na(skewness)) %>% # Exclude rows where transformation was not applicable or failed
+      mutate(abs_skewness = abs(skewness)) %>%
+      # Define criteria for ideal and acceptable skewness
+      mutate(
+        is_ideal = skewness >= -0.5 & skewness <= 0.5,
+        is_acceptable = skewness >= -1.0 & skewness <= 1.0 
+      ) %>%
+      # Assign a priority score for transformation types (lower is more preferred)
+      mutate(priority_score = case_when(
+        transformation_type == "Original" ~ 1,
+        transformation_type == "Log" ~ 2,
+        transformation_type == "Square Root" ~ 3,
+        transformation_type == "Box-Cox" ~ 4,
+        TRUE ~ 5 # Should not be reached if types are correct
+      ))
 
-```{r detailed-example}
-# Show detailed results for one variable as example
-if(length(transform_candidates) > 0) {
-  example_var <- transform_candidates[1]
-  cat("\nDetailed transformation options for", example_var, ":\n")
-  
-  example_results <- all_results %>%
-    filter(variable == example_var) %>%
-    arrange(abs_skewness) %>%
-    select(transformation, skewness, abs_skewness)
-  
-  kable(example_results, digits = 3)
+    # Select the best transformation for each variable based on defined preferences
+    chosen_options_summary <- processed_options %>%
+      group_by(variable) %>%
+      arrange(
+        variable, 
+        desc(is_ideal),      # Prefer transformations resulting in ideal skewness
+        desc(is_acceptable), # Next, prefer those resulting in acceptable skewness
+        priority_score,      # Then, prefer by type (Original > Log > Sqrt > Box-Cox)
+        abs_skewness         # Finally, as a tie-breaker, choose the one with the smallest absolute skewness
+      ) %>%
+      slice_head(n = 1) %>% # Takes the first row for each group after sorting
+      ungroup() %>%
+      # Select only the necessary columns to identify the chosen transformation
+      select(variable, transformation_type, transformation_detail, chosen_skewness = skewness)
+
+    # Prepare the final table for display
+    # This table will list all attempted transformations and mark the chosen one.
+    transformation_selection_table_data <- all_transformation_options %>%
+      left_join(
+        chosen_options_summary, 
+        by = c("variable", "transformation_type", "transformation_detail")
+      ) %>%
+      mutate(is_chosen = !is.na(chosen_skewness)) %>% # Mark 'TRUE' if this row matches a chosen transformation
+      select(Variable = variable, 
+             `Transformation Type` = transformation_type, 
+             `Transformation Detail` = transformation_detail, 
+             Skewness = skewness, 
+             Chosen = is_chosen)
+
+    # Output the table using kable
+    kable(transformation_selection_table_data, digits = 3, 
+          caption = "Transformation Options and Selection for Candidate Variables",
+          format = "pipe", # Using 'pipe' for markdown table format, adjust if needed
+          align = c('l', 'l', 'l', 'r', 'c')) # l=left, r=right, c=center
+  } else {
+    cat("No valid transformation options found for the candidate variables after testing.")
+  }
+} else {
+  # This message will be shown if 'transform_candidates' was empty initially
+  cat("No variables were identified as candidates for transformation (initial |skewness| > 0.5).")
 }
 ```
 
