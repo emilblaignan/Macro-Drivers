@@ -633,6 +633,31 @@ print(p_predictors)
 
 [Model building section will follow with competing regression models, diagnostics, and selection procedures as outlined in the project proposal]
 
+library(tidyverse)
+library(car)
+library(lmtest)
+
+df <- read_csv("data/final_analysis_data.csv")
+
+df <- df %>%
+  mutate(
+    USREC = factor(USREC, levels = c(0, 1), labels = c("No", "Yes")),
+    tightening = factor(tightening, levels = c(0, 1), labels = c("No", "Yes"))
+  )
+
+df_clean <- df %>%
+  select(monthly_return, AAA, CPIAUCSL, FEDFUNDS, INDPRO, VIXCLS, USREC, tightening) %>%
+  na.omit()
+
+model_simple <- lm(
+  monthly_return ~ AAA + CPIAUCSL + FEDFUNDS + INDPRO + VIXCLS + USREC + tightening,
+  data = df_clean
+)
+
+summary(model_simple)
+vif(model_simple)
+resettest(model_simple)
+
 # Conclusion (To be completed)
 
 [Final interpretation and economic insights]
