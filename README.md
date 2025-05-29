@@ -53,7 +53,7 @@ Execute the scripts in this order:
 ### 4. Viewing Results
 After running the scripts, you can:
 
-* Knit `project_report.Rmd` to generate the report.
+* Knit `report.Rmd` to generate the report.
 * View results in the `output` folder, including:
     * Boruta variable importance plot
     * Correlation matrix
@@ -64,4 +64,4 @@ After running the scripts, you can:
 * `data/`: Raw and processed data files
 * `scripts/`: R scripts for data acquisition and analysis
 * `output/`: Analysis results and visualizations
-* `project_report.Rmd`: R Markdown report for the project
+* `report.Rmd`: R Markdown report for the project
