@@ -45,9 +45,9 @@ This project identifies key macroeconomic predictors of S&P 500 returns using Bo
 
 **Data Sources**: We utilize quantitative data from FRED (Federal Reserve Economic Data) spanning January 2000 to March 2025, including over 15 initial macroeconomic predictors. Factor variables include the NBER recession indicator and Fed tightening cycle dummies. Our target variable is monthly S&P 500 returns calculated from Yahoo Finance data.
 
-# Variable Selection
+# 1. Variable Selection
 
-## Quantitative Predictors via Boruta
+## 1.1 Quantitative Predictors via Boruta
 
 We applied the Boruta algorithm to identify macroeconomic variables most strongly associated with monthly S&P 500 returns. Boruta uses a random forest classifier to assess feature importance, comparing real variables against randomly permuted "shadow" features.
 
@@ -103,7 +103,7 @@ cat("Top variables by importance:\n")
 print(head(confirmed_vars, 10))
 ```
 
-### Final Variable Selection from Boruta Results
+### 1.1.1 Final Variable Selection from Boruta Results
 
 From Boruta's confirmed important variables, we selected the top five using the following criteria:
 
@@ -134,7 +134,7 @@ Our final selection represents key macroeconomic themes:
 4. **CPIAUCSL** – Consumer Price Index (inflation pressures)
 5. **FEDFUNDS** – Federal Funds Rate (monetary policy stance)
 
-## Selection of Factor Variables
+## 1.2 Selection of Factor Variables
 
 We evaluated two binary indicators based on economic theory:
 
@@ -175,9 +175,9 @@ par(mfrow = c(1, 1))
 
 **Results**: Neither test produced statistically significant results at conventional levels (p = 0.22 for USREC; p = 0.19 for tightening). However, we retained both factors based on strong theoretical relevance.
 
-# Descriptive Analysis
+# 2. Descriptive Analysis
 
-## Data Quality Assessment
+## 2.1 Data Quality Assessment
 
 ```{r analysis-setup}
 # Define analysis variables
@@ -201,7 +201,7 @@ print(missing_summary)
 
 **Missing Data Handling**: Our preprocessed dataset contains no missing values. Any missing values encountered during preprocessing were addressed through median imputation.
 
-## Outlier Detection and Treatment
+## 2.2 Outlier Detection and Treatment
 
 ```{r outlier-analysis}
 # Function to detect outliers using IQR method
@@ -243,7 +243,7 @@ cat("\nWinsorization applied to monthly_return at 1% and 99% percentiles.\n")
 
 **Outlier Treatment**: We winsorized S&P 500 returns at the 1st and 99th percentiles to mitigate the impact of extreme market events while preserving the overall distribution structure.
 
-## Univariate Distributional Analysis
+## 2.3 Univariate Distributional Analysis
 
 ```{r summary-stats}
 # Generate summary statistics
@@ -267,9 +267,36 @@ summary_stats <- analysis_data %>%
 kable(summary_stats, digits = 3, caption = "Summary Statistics for Analysis Variables")
 ```
 
-## Distribution Plots with Fitted Normal Curves
+```{r summary-stats-factor}
+# Generate summary statistics for factor variables
+factor_vars <- c("USREC", "tightening")
+factor_summary <- analysis_data %>%
+  select(all_of(factor_vars)) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "value") %>%
+  group_by(variable, value) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(variable) %>%
+  mutate(
+    percentage = round((count / sum(count)) * 100, 2),
+    interpretation = case_when(
+      variable == "USREC" & value == 1 ~ "Recession periods",
+      variable == "USREC" & value == 0 ~ "Non-recession periods", 
+      variable == "tightening" & value == 1 ~ "Fed tightening periods",
+      variable == "tightening" & value == 0 ~ "Non-tightening periods",
+      TRUE ~ as.character(value)
+    )
+  ) %>%
+  arrange(variable, desc(value))
 
-```{r distribution-plots, fig.height=10, fig.width=12}
+kable(factor_summary, 
+      digits = 2, 
+      caption = "Summary Statistics for Factor Variables",
+      col.names = c("Variable", "Value", "Count", "Percentage (%)", "Interpretation"))
+```
+
+## 2.4 Distribution Plots with Fitted Normal Curves
+
+```{r distribution-plots, fig.height=7, fig.width=12}
 # Create histograms with density curves and fitted normal distributions
 create_histogram_plots <- function(data, vars) {
   plots <- list()
@@ -303,9 +330,9 @@ grid.arrange(grobs = hist_plots[1:3], ncol = 3, top = "Distribution Analysis - P
 grid.arrange(grobs = hist_plots[4:6], ncol = 3, top = "Distribution Analysis - Part 2")
 ```
 
-## Normality Assessment via Q-Q Plots
+## 2.5 Normality Assessment via Q-Q Plots
 
-```{r qq-plots, fig.height=10, fig.width=12}
+```{r qq-plots, fig.height=7, fig.width=12}
 # Create Q-Q plots for normality assessment
 create_qq_plots <- function(data, vars) {
   plots <- list()
@@ -333,7 +360,7 @@ grid.arrange(grobs = qq_plots[1:3], ncol = 3, top = "Q-Q Plot Analysis - Part 1"
 grid.arrange(grobs = qq_plots[4:6], ncol = 3, top = "Q-Q Plot Analysis - Part 2")
 ```
 
-## Transformation Analysis
+## 2.6 Transformation Analysis
 
 ```{r identify-candidates}
 # Identify variables requiring transformation based on skewness and visual inspection
@@ -515,7 +542,7 @@ if(length(transform_candidates) > 0) {
 
 **Consequences of Non-Transformation**: If non-linear variables are not transformed, the linear model might not accurately capture the relationships, potentially leading to biased coefficient estimates and poor model fit. Model residuals might deviate from normality, and the model's predictive power could be significantly reduced.
 
-## Correlation Analysis
+## 2.7 Correlation Analysis
 
 ```{r correlation-analysis, fig.height=7, fig.width=8}
 # Calculate correlation matrix
@@ -558,7 +585,7 @@ cat("\nCorrelations with Monthly Returns:\n")
 print(round(target_cors, 3))
 ```
 
-## Factor Variable Analysis
+## 2.8 Factor Variable Analysis
 
 ```{r factor-analysis}
 # Summary of factor variables
@@ -591,7 +618,7 @@ for(var in factor_vars) {
 grid.arrange(grobs = factor_boxplots, ncol = 2)
 ```
 
-## Time Series Visualization
+## 2.9 Time Series Visualization
 
 ```{r time-series, fig.height=6, fig.width=10}
 # Plot target variable over time
@@ -623,7 +650,7 @@ p_predictors <- ggplot(ts_data_normalized, aes(x = date, y = value, color = vari
 print(p_predictors)
 ```
 
-## Descriptive Analysis Summary
+## 2.10 Descriptive Analysis Summary
 
 **Key Findings:**
 
@@ -857,7 +884,7 @@ grid.arrange(qq_basic, qq_transform, ncol = 2,
              top = "Normality Assessment: Q-Q Plots")
 ```
 
-The Q-Q plots and formal tests in Tables 8 and 9 suggest that residuals in both the basic and transformed models deviate from normality:
+The Q-Q plots and formal tests in Tables 9 and 10 suggest that residuals in both the basic and transformed models deviate from normality:
 
 - **Basic Model:**  
   - Jarque-Bera = 62.60, *p*-value = 0  
@@ -1000,7 +1027,7 @@ kable(specification_results, caption = "RESET Test for Model Specification")
 
 To assess potential misspecification in our regression models—such as omitted nonlinear terms or incorrect functional form—we conducted the **Ramsey RESET test** on both the basic and transformed models. The test evaluates whether higher-order fitted values improve the model, which would suggest missing nonlinear relationships.
 
-The results, summarized in Table 12, are as follows:
+The results, summarized in Table 13, are as follows:
 
 - **Basic Model:**  
   - F = 2.4138, *p* = 0.0913  
@@ -1423,7 +1450,7 @@ kable(final_comparison, digits = 4, caption = "Final Model Comparison")
 
 ### 3.8.2 Model Selection Decision
 
-Based on the results in **Table 19: Final Model Comparison**, we select the **transformed model** as our final specification. This decision is grounded in a combination of statistical performance, diagnostic robustness, and economic interpretability. Importantly, this choice reflects a comparative evaluation across several candidate models developed throughout our analysis.
+Based on the results in **Table 20: Final Model Comparison**, we select the **transformed model** as our final specification. This decision is grounded in a combination of statistical performance, diagnostic robustness, and economic interpretability. Importantly, this choice reflects a comparative evaluation across several candidate models developed throughout our analysis.
 
 - **Prediction Accuracy:**  
   - The transformed model achieves the lowest cross-validation RMSE (`4.3480`), outperforming the basic model (`4.7771`) and other competing specifications, indicating superior predictive performance on unseen data.
